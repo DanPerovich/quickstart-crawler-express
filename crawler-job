@@ -3,19 +3,21 @@
 jobEnvFile=$1
 additionalEnv=""
 if [[ "${2^^}" == "DRYRUN" ]]; then
-    dryRun=$2
+    export REPO_CRAWLER_DRY_RUN=true
 fi
 
 configDir=$(dirname "$jobEnvFile")
 fileName=$(basename "$jobEnvFile")
+binaryName="$configDir/crawler"
 if [[ "$fileName" == "db."* ]]; then
     #DB file is sent, requires Repo file as well
     repoName=$(echo "$fileName" | cut -d. -f 2- | rev | cut -d. -f 3- | rev)
     repoFile="$configDir/repo.${repoName}.env"
-    additionalEnv="--env-file \"$repoFile\""
-    jobTypeParam=""
+    export $(grep -v '^#' "$repoFile" | xargs)
 else
-    jobTypeParam="-e REPO_CRAWLER_ACCOUNT_DISCOVERY=true -e REPO_CRAWLER_DATA_CLASSIFICATION=false -e REPO_CRAWLER_REPO_DATABASE=none"
+    export REPO_CRAWLER_ACCOUNT_DISCOVERY=true
+    export REPO_CRAWLER_DATA_CLASSIFICATION=false
+    export REPO_CRAWLER_REPO_DATABASE=none
 fi
 
 cpEnvFile="$configDir/controlplane.env"
@@ -30,18 +32,28 @@ elif [ -z "$cpEnvFile" ]; then
     exit 1
 fi
 
-image="us-docker.pkg.dev/cyralinc/cyral-repo-crawler/cyral-repo-crawler:v0.5.3"
+export $(grep -v '^#' "$jobEnvFile" | xargs)
+export $(grep -v '^#' "$cpEnvFile" | xargs)
 
-dockercmd="docker run --rm ${dryRun:+ -e REPO_CRAWLER_DRY_RUN=true} ${additionalEnv} ${jobTypeParam} --env-file \"$jobEnvFile\" --env-file \"$cpEnvFile\" $image"
-if ! sudoOutput=$(eval sudo -n "$dockercmd" 2>&1); then
-    if ! stdOutput=$(eval "$dockercmd" 2>&1); then
-        echo "FAILED to invoke crawler job!"
-        echo "Sudo Attempt: $sudoOutput"
-        echo "Standard Attempt: $stdOutput"
+if [ ! -x "$binaryName" ]; then
+    image="us-docker.pkg.dev/cyralinc/cyral-repo-crawler/cyral-repo-crawler:v0.5.3"
+    
+    dockercmd="docker run --rm --name crawler -d --entrypoint /bin/sleep $image 10"
+    dockercp="docker cp crawler:/bin/crawler $binaryName"
+    
+    if ! sudoOutput=$(eval sudo -n "$dockercmd" 2>&1); then
+        if ! stdOutput=$(eval "$dockercmd" 2>&1); then
+            echo "FAILED to invoke crawler job!"
+            echo "Sudo Attempt: $sudoOutput"
+            echo "Standard Attempt: $stdOutput"
+        else
+            output="$stdOutput"
+            eval "$dockercp"
+        fi
     else
-        output="$stdOutput"
+    output="$sudoOutput"
+    eval sudo -n "$dockercp"
     fi
-else
-output="$sudoOutput"
 fi
 echo "$output"
+$binaryName
